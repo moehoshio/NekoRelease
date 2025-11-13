@@ -1,0 +1,16 @@
+{
+  "packageName": "myproject",
+  "repositoryUrl": "https://github.com/username/myproject",
+  "packageManagers": [
+    "vcpkg",
+    "Conan",
+    "Meson"
+  ],
+  "mode": "Auto",
+  "outputPaths": {
+    "vcpkg": "./packages/vcpkg",
+    "Conan": "./packages/conan",
+    "Meson": "./packages/meson",
+    "CPM": "./packages/cpm"
+  }
+}

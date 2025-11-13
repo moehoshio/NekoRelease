@@ -1,0 +1,8 @@
+# NekoRelease
+
+downloads/
+packages/
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

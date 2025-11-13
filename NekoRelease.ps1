@@ -7,7 +7,7 @@ param(
     [string]$Version = "",
     
     [Parameter(Mandatory=$false, HelpMessage="Package managers to generate files for")]
-    [ValidateSet("Chocolatey", "Scoop", "Winget", "vcpkg", "Conan", "Meson", "Buckaroo", "CPM", "All")]
+    [ValidateSet("vcpkg", "Conan", "All")]
     [string[]]$PackageManagers = @(),
     
     [Parameter(Mandatory=$false, HelpMessage="Package file output paths")]
@@ -36,7 +36,10 @@ param(
     [switch]$SkipGitTag,
     
     [Parameter(Mandatory=$false, HelpMessage="Skip Release creation (only create tag)")]
-    [switch]$SkipRelease
+    [switch]$SkipRelease,
+    
+    [Parameter(Mandatory=$false, HelpMessage="Enable debug output")]
+    [switch]$DebugOutput
 )
 
 # ================================================================================
@@ -48,6 +51,7 @@ $ErrorActionPreference = "Stop"
 # Global script state
 $script:DryRunMode = $DryRun
 $script:LogFilePath = $LogFile
+$script:DebugMode = $DebugOutput
 
 # Color output functions
 function Write-ColorOutput {
@@ -77,6 +81,13 @@ function Write-Warning {
 function Write-Error {
     param([string]$Message)
     Write-ColorOutput "✗ $Message" "Red"
+}
+
+function Write-DebugInfo {
+    param([string]$Message)
+    if ($script:DebugMode) {
+        Write-ColorOutput "[DEBUG] $Message" "DarkGray"
+    }
 }
 
 function Write-Log {
@@ -112,10 +123,12 @@ function Read-ConfigFile {
     }
     
     Write-Info "Loading configuration from: $ConfigPath"
+    Write-DebugInfo "Config file path: $ConfigPath"
     
     try {
         $config = Get-Content -Path $ConfigPath -Raw | ConvertFrom-Json
         Write-Success "Configuration loaded successfully"
+        Write-DebugInfo "Config object: $($config | ConvertTo-Json -Depth 2 -Compress)"
         return $config
     } catch {
         Write-Warning "Failed to parse configuration file: $_"
@@ -130,8 +143,14 @@ function Merge-ConfigWithParams {
     )
     
     if ($null -eq $Config) {
+        Write-DebugInfo "No configuration to merge (Config is null)"
         return
     }
+    
+    Write-DebugInfo "Merging configuration with command-line parameters..."
+    Write-DebugInfo "Config has packageName: $($null -ne $Config.packageName)"
+    Write-DebugInfo "Config has repositoryUrl: $($null -ne $Config.repositoryUrl)"
+    Write-DebugInfo "Config has packageManagers: $($null -ne $Config.packageManagers)"
     
     # Merge configuration with command-line parameters
     # Command-line parameters take precedence
@@ -515,10 +534,12 @@ function Calculate-FileHash {
     )
     
     Write-Info "Calculating file hash: $FilePath"
+    Write-DebugInfo "Algorithm: $Algorithm"
     
     $hash = Get-FileHash -Path $FilePath -Algorithm $Algorithm
     
     Write-Success "Hash: $($hash.Hash)"
+    Write-DebugInfo "Full hash object: Algorithm=$($hash.Algorithm), Path=$($hash.Path)"
     
     return $hash.Hash
 }
@@ -538,12 +559,101 @@ function Download-AndHashReleaseAssets {
     
     try {
         Write-Info "Downloading and calculating hashes for release assets..."
+        Write-DebugInfo "Repository path: $RepoPath"
+        Write-DebugInfo "Tag version: $TagVersion"
+        Write-DebugInfo "Download path: $DownloadPath"
         
-        # Download all assets
-        gh release download $TagVersion -D $DownloadPath
+        $downloadSuccess = $false
         
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to download release assets"
+        # Try gh CLI first
+        if (Get-Command gh -ErrorAction SilentlyContinue) {
+            Write-DebugInfo "GitHub CLI detected, attempting download..."
+            try {
+                $ghOutput = gh release download $TagVersion -D $DownloadPath 2>&1
+                
+                if ($LASTEXITCODE -eq 0) {
+                    $downloadSuccess = $true
+                    Write-Success "Downloaded assets via GitHub CLI"
+                } else {
+                    Write-Warning "GitHub CLI download failed, falling back to web download"
+                }
+            } catch {
+                Write-Warning "GitHub CLI error: $($_.Exception.Message)"
+                Write-Warning "Falling back to web download"
+            }
+        } else {
+            Write-Warning "GitHub CLI not available, using web download"
+        }
+        
+        # Fallback to PowerShell web download
+        if (-not $downloadSuccess) {
+            $repoUrl = Get-GitRemoteUrl -RepoPath $RepoPath
+            
+            if (-not $repoUrl) {
+                Write-Error "Failed to get repository URL for web download"
+                return @{}
+            }
+            
+            # Extract owner/repo from URL
+            if ($repoUrl -match "github\.com[/:]([^/]+)/([^/]+?)(?:\.git)?$") {
+                $owner = $Matches[1]
+                $repo = $Matches[2]
+                
+                Write-DebugInfo "Parsed GitHub URL - Owner: $owner, Repo: $repo"
+                Write-Info "Fetching release info from GitHub API..."
+                
+                try {
+                    # Get release info from GitHub API
+                    $apiUrl = "https://api.github.com/repos/$owner/$repo/releases/tags/$TagVersion"
+                    $release = Invoke-RestMethod -Uri $apiUrl -Headers @{
+                        "Accept" = "application/vnd.github+json"
+                        "User-Agent" = "NekoRelease-PowerShell"
+                    }
+                    
+                    if ($release.assets.Count -eq 0) {
+                        Write-Warning "No assets found in release $TagVersion"
+                        Write-Info "Downloading source code archive instead..."
+                        
+                        # Download source code tarball
+                        $tarballUrl = "https://github.com/$owner/$repo/archive/refs/tags/$TagVersion.tar.gz"
+                        $tarballName = "$repo-$TagVersion.tar.gz"
+                        $tarballPath = Join-Path $DownloadPath $tarballName
+                        
+                        try {
+                            Write-Info "Downloading: $tarballName"
+                            Invoke-WebRequest -Uri $tarballUrl -OutFile $tarballPath
+                            Write-Success "Downloaded: $tarballName"
+                            $downloadSuccess = $true
+                        } catch {
+                            Write-Error "Failed to download source tarball: $($_.Exception.Message)"
+                        }
+                    } else {
+                        Write-Info "Found $($release.assets.Count) asset(s)"
+                        
+                        foreach ($asset in $release.assets) {
+                            $assetUrl = $asset.browser_download_url
+                            $assetName = $asset.name
+                            $assetPath = Join-Path $DownloadPath $assetName
+                            
+                            Write-Info "Downloading: $assetName"
+                            Invoke-WebRequest -Uri $assetUrl -OutFile $assetPath
+                            Write-Success "Downloaded: $assetName"
+                        }
+                        
+                        $downloadSuccess = $true
+                    }
+                } catch {
+                    Write-Error "Failed to download via GitHub API: $($_.Exception.Message)"
+                    return @{}
+                }
+            } else {
+                Write-Error "Unable to parse GitHub repository from URL: $repoUrl"
+                return @{}
+            }
+        }
+        
+        if (-not $downloadSuccess) {
+            Write-Warning "Failed to download release assets"
             return @{}
         }
         
@@ -551,9 +661,28 @@ function Download-AndHashReleaseAssets {
         $hashes = @{}
         $files = Get-ChildItem -Path $DownloadPath -File
         
+        if ($files.Count -eq 0) {
+            Write-Warning "No files found to hash in download directory"
+            Write-Info "This is normal for source-only releases"
+            return @{}
+        }
+        
+        Write-Info "Calculating hashes for $($files.Count) file(s)..."
+        
         foreach ($file in $files) {
-            $hash = Calculate-FileHash -FilePath $file.FullName
-            $hashes[$file.Name] = $hash
+            Write-DebugInfo "Processing file: $($file.Name)"
+            
+            # Calculate both SHA256 (for Conan) and SHA512 (for vcpkg)
+            $sha256 = Calculate-FileHash -FilePath $file.FullName -Algorithm "SHA256"
+            $sha512 = Calculate-FileHash -FilePath $file.FullName -Algorithm "SHA512"
+            
+            $hashes[$file.Name] = @{
+                "SHA256" = $sha256
+                "SHA512" = $sha512
+                "FileName" = $file.Name
+            }
+            
+            Write-DebugInfo "Stored hashes for $($file.Name): SHA256=$sha256, SHA512=$sha512"
         }
         
         return $hashes
@@ -681,14 +810,29 @@ function Generate-VcpkgPort {
     
     Write-Info "Generating vcpkg port files..."
     
+    Write-DebugInfo "vcpkg: Received $($Hashes.Count) hash entries"
+    Write-DebugInfo "vcpkg: Hash keys: [$($Hashes.Keys -join ', ')]"
+    
     # Create port directory structure
     $portDir = Join-Path $OutputPath $PackageName
     if (-not (Test-Path $portDir)) {
         New-Item -ItemType Directory -Path $portDir -Force | Out-Null
     }
     
-    # Get first hash if available
-    $hash = if ($Hashes.Count -gt 0) { $Hashes.Values | Select-Object -First 1 } else { "0000000000000000000000000000000000000000000000000000000000000000" }
+    # Get SHA512 hash from the first file
+    $sha512Hash = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    if ($Hashes.Count -gt 0) {
+        $firstFile = $Hashes.Keys | Select-Object -First 1
+        if ($Hashes[$firstFile] -is [hashtable] -and $Hashes[$firstFile].ContainsKey("SHA512")) {
+            $sha512Hash = $Hashes[$firstFile]["SHA512"]
+            Write-DebugInfo "vcpkg: Using SHA512 from $firstFile : $sha512Hash"
+        } else {
+            Write-Warning "vcpkg: Hash format unexpected, using placeholder"
+            Write-DebugInfo "vcpkg: Hash type: $($Hashes[$firstFile].GetType().Name)"
+        }
+    } else {
+        Write-Warning "vcpkg: No hashes available, using placeholder"
+    }
     
     # Clean version (remove 'v' prefix for vcpkg)
     $cleanVersion = $Version -replace '^v', ''
@@ -736,7 +880,7 @@ function Generate-VcpkgPort {
         # Update existing portfile.cmake
         Update-FileContent -FilePath $portfilePath -Replacements @{
             "REF\s+\S+" = "REF $Version"
-            "SHA512\s+\S+" = "SHA512 $hash"
+            "SHA512\s+\S+" = "SHA512 $sha512Hash"
         }
         Write-Info "  - portfile.cmake (updated)"
     } else {
@@ -748,7 +892,7 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO $repoPath
     REF $Version
-    SHA512 $hash
+    SHA512 $sha512Hash
     HEAD_REF main
 )
 
@@ -782,8 +926,23 @@ function Generate-ConanRecipe {
     
     Write-Info "Generating Conan recipe..."
     
-    # Get first hash if available
-    $hash = if ($Hashes.Count -gt 0) { $Hashes.Values | Select-Object -First 1 } else { "REPLACE_WITH_HASH" }
+    Write-DebugInfo "Conan: Received $($Hashes.Count) hash entries"
+    Write-DebugInfo "Conan: Hash keys: [$($Hashes.Keys -join ', ')]"
+    
+    # Get SHA256 hash from the first file
+    $sha256Hash = "REPLACE_WITH_SHA256_HASH"
+    if ($Hashes.Count -gt 0) {
+        $firstFile = $Hashes.Keys | Select-Object -First 1
+        if ($Hashes[$firstFile] -is [hashtable] -and $Hashes[$firstFile].ContainsKey("SHA256")) {
+            $sha256Hash = $Hashes[$firstFile]["SHA256"]
+            Write-DebugInfo "Conan: Using SHA256 from $firstFile : $sha256Hash"
+        } else {
+            Write-Warning "Conan: Hash format unexpected, using placeholder"
+            Write-DebugInfo "Conan: Hash type: $($Hashes[$firstFile].GetType().Name)"
+        }
+    } else {
+        Write-Warning "Conan: No hashes available, using placeholder"
+    }
     
     # Clean version (remove 'v' prefix)
     $cleanVersion = $Version -replace '^v', ''
@@ -881,7 +1040,7 @@ class ${className}Conan(ConanFile):
 
   "$cleanVersion":
     url: "$(if ($DownloadUrl) { $DownloadUrl } else { "https://github.com/yourusername/NekoRelease/archive/refs/tags/$Version.tar.gz" })"
-    sha256: "$hash"
+    sha256: "$sha256Hash"
 "@
         
         # Check if version already exists
@@ -889,7 +1048,7 @@ class ${className}Conan(ConanFile):
             # Update existing version entry
             Update-FileContent -FilePath $conandataPath -Replacements @{
                 "`"$cleanVersion`":\s*\n\s*url:\s*`"[^`"]*`"" = "`"$cleanVersion`":`n    url: `"$(if ($DownloadUrl) { $DownloadUrl } else { "https://github.com/yourusername/NekoRelease/archive/refs/tags/$Version.tar.gz" })`""
-                "sha256:\s*`"[^`"]*`"" = "sha256: `"$hash`""
+                "sha256:\s*`"[^`"]*`"" = "sha256: `"$sha256Hash`""
             }
         } else {
             # Append new version entry
@@ -902,7 +1061,7 @@ class ${className}Conan(ConanFile):
 sources:
   "$cleanVersion":
     url: "$(if ($DownloadUrl) { $DownloadUrl } else { "https://github.com/yourusername/NekoRelease/archive/refs/tags/$Version.tar.gz" })"
-    sha256: "$hash"
+    sha256: "$sha256Hash"
 "@
         Set-Content -Path $conandataPath -Value $conandataContent -Encoding UTF8
         Write-Info "  - conandata.yml (created)"
@@ -1169,40 +1328,30 @@ function Generate-PackageFiles {
     )
     
     foreach ($manager in $Managers) {
-        $outputPath = if ($OutputPaths.ContainsKey($manager)) {
-            $OutputPaths[$manager]
+        # Ensure we're working with a single manager string
+        $managerName = $manager.ToString().Trim()
+        
+        Write-DebugInfo "Generate-PackageFiles: Processing '$managerName' from Managers array: [$($Managers -join ', ')])"
+        Write-DebugInfo "Manager type: $($manager.GetType().Name), Managers count: $($Managers.Count)"
+        
+        $outputPath = if ($OutputPaths.ContainsKey($managerName)) {
+            $OutputPaths[$managerName]
         } else {
-            Join-Path $PWD "packages\$manager"
+            Join-Path $PWD "packages\$managerName"
         }
+        
+        Write-DebugInfo "Output path for '$managerName': $outputPath"
         
         if (-not (Test-Path $outputPath)) {
             New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
         }
         
-        switch ($manager) {
-            "Chocolatey" {
-                Generate-ChocolateyPackage -Version $Version -Hashes $Hashes -OutputPath $outputPath
-            }
-            "Scoop" {
-                Generate-ScoopManifest -Version $Version -Hashes $Hashes -OutputPath $outputPath
-            }
-            "Winget" {
-                Generate-WingetManifest -Version $Version -Hashes $Hashes -OutputPath $outputPath
-            }
+        switch ($managerName) {
             "vcpkg" {
                 Generate-VcpkgPort -PackageName $script:PackageName -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
             }
             "Conan" {
                 Generate-ConanRecipe -PackageName $script:PackageName -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
-            }
-            "Meson" {
-                Generate-MesonWrap -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
-            }
-            "Buckaroo" {
-                Generate-BuckarooManifest -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
-            }
-            "CPM" {
-                Generate-CPMPackage -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
             }
         }
     }
@@ -1286,34 +1435,40 @@ function Main {
     # Collect package manager selection
     if ($PackageManagers.Count -eq 0) {
         Write-Info "`nAvailable package managers:"
-        Write-Host "  1. Chocolatey (Windows)"
-        Write-Host "  2. Scoop (Windows)"
-        Write-Host "  3. Winget (Windows)"
-        Write-Host "  4. vcpkg (C++)"
-        Write-Host "  5. Conan (C++)"
-        Write-Host "  6. Meson WrapDB (C++)"
-        Write-Host "  7. Buckaroo (C++)"
-        Write-Host "  8. CPM (CMake Package Manager)"
-        Write-Host "  9. All"
+        Write-Host "  1. vcpkg (C++)"
+        Write-Host "  2. Conan (C++)"
+        Write-Host "  3. All"
         
         $choice = Get-UserInput -Prompt "Select package managers (comma-separated numbers, or Enter to skip)" -Required $false
         
         if (-not [string]::IsNullOrWhiteSpace($choice)) {
             $choices = $choice -split ',' | ForEach-Object { $_.Trim() }
             
+            Write-DebugInfo "User input: '$choice'"
+            Write-DebugInfo "Split choices: [$($choices -join ', ')]"
+            
+            # Initialize as array to prevent string concatenation
+            $selectedManagers = @()
+            
             foreach ($c in $choices) {
+                Write-DebugInfo "Processing choice: '$c'"
                 switch ($c) {
-                    "1" { $PackageManagers += "Chocolatey" }
-                    "2" { $PackageManagers += "Scoop" }
-                    "3" { $PackageManagers += "Winget" }
-                    "4" { $PackageManagers += "vcpkg" }
-                    "5" { $PackageManagers += "Conan" }
-                    "6" { $PackageManagers += "Meson" }
-                    "7" { $PackageManagers += "Buckaroo" }
-                    "8" { $PackageManagers += "CPM" }
-                    "9" { $PackageManagers = @("Chocolatey", "Scoop", "Winget", "vcpkg", "Conan", "Meson", "Buckaroo", "CPM"); break }
+                    "1" { $selectedManagers += "vcpkg" }
+                    "2" { $selectedManagers += "Conan" }
+                    "3" { 
+                        $selectedManagers = @("vcpkg", "Conan")
+                        break 
+                    }
                 }
+                Write-DebugInfo "After processing '$c': [$($selectedManagers -join ', ')] (Count: $($selectedManagers.Count))"
             }
+            
+            # Assign the collected array
+            $PackageManagers = $selectedManagers
+            
+            Write-DebugInfo "Final PackageManagers array: [$($PackageManagers -join ', ')]"
+            Write-DebugInfo "PackageManagers.Count: $($PackageManagers.Count)"
+            Write-DebugInfo "PackageManagers type: $($PackageManagers.GetType().Name)"
         }
     }
     
@@ -1383,7 +1538,15 @@ function Main {
                 Write-Info "  - $manager -> $outputPath"
             }
         } else {
-            Generate-PackageFiles -Version $Version -Hashes $hashes -Managers $PackageManagers -OutputPaths $OutputPaths
+            # Generate files for each manager separately to avoid path conflicts
+            Write-DebugInfo "Total package managers to process: $($PackageManagers.Count)"
+            Write-DebugInfo "Package managers list: [$($PackageManagers -join ', ')]"
+            
+            foreach ($manager in $PackageManagers) {
+                Write-DebugInfo "Main loop: Processing manager '$manager' (Type: $($manager.GetType().Name))"
+                Write-DebugInfo "Calling Generate-PackageFiles with single-item array: @('$manager')"
+                Generate-PackageFiles -Version $Version -Hashes $hashes -Managers @($manager) -OutputPaths $OutputPaths
+            }
         }
     }
     

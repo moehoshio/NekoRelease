@@ -42,7 +42,22 @@ param(
     [switch]$SkipValidation,
 
     [Parameter()]
-    [switch]$SkipTesting
+    [switch]$SkipTesting,
+
+    [Parameter()]
+    [switch]$SkipGitTag,
+
+    [Parameter()]
+    [switch]$SkipRelease,
+
+    [Parameter()]
+    [string[]]$PackageManagers,
+
+    [Parameter()]
+    [string]$PackageName,
+
+    [Parameter()]
+    [switch]$Interactive
 )
 
 $ErrorActionPreference = "Stop"
@@ -82,16 +97,22 @@ Write-Host "Version: $Version" -ForegroundColor Yellow
 Write-Host "Config:  $ConfigFile" -ForegroundColor Yellow
 Write-Host ""
 
-$releaseArgs = @(
-    "-Version", $Version
-)
+$releaseArgs = @{}
+$releaseArgs['Version'] = $Version
 
 if (Test-Path $ConfigFile) {
-    $releaseArgs += @("-ConfigFile", $ConfigFile)
+    $releaseArgs['ConfigFile'] = $ConfigFile
     Write-Host "Using configuration file: $ConfigFile" -ForegroundColor Cyan
 } else {
     Write-Host "No configuration file found, using defaults" -ForegroundColor Yellow
 }
+
+# Add optional switches
+if ($SkipGitTag) { $releaseArgs['SkipGitTag'] = $true }
+if ($SkipRelease) { $releaseArgs['SkipRelease'] = $true }
+if ($PSBoundParameters.ContainsKey('PackageManagers')) { $releaseArgs['PackageManagers'] = $PackageManagers }
+if ($PSBoundParameters.ContainsKey('PackageName')) { $releaseArgs['PackageName'] = $PackageName }
+if ($PSBoundParameters.ContainsKey('Interactive')) { $releaseArgs['Interactive'] = $Interactive }
 
 try {
     & ".\NekoRelease.ps1" @releaseArgs

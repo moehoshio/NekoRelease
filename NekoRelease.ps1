@@ -671,6 +671,7 @@ ManifestVersion: 1.0.0
 
 function Generate-VcpkgPort {
     param(
+        [string]$PackageName,
         [string]$Version,
         [hashtable]$Hashes,
         [string]$OutputPath,
@@ -681,7 +682,7 @@ function Generate-VcpkgPort {
     Write-Info "Generating vcpkg port files..."
     
     # Create port directory structure
-    $portDir = Join-Path $OutputPath "nekorelease"
+    $portDir = Join-Path $OutputPath $PackageName
     if (-not (Test-Path $portDir)) {
         New-Item -ItemType Directory -Path $portDir -Force | Out-Null
     }
@@ -709,7 +710,7 @@ function Generate-VcpkgPort {
     } else {
         # Create new vcpkg.json
         $vcpkgJson = @{
-            name = "nekorelease"
+            name = $PackageName
             version = $cleanVersion
             description = "Fast release tool for Neko ecosystem"
             homepage = if ($RepoUrl) { $RepoUrl } else { "https://github.com/yourusername/NekoRelease" }
@@ -771,6 +772,7 @@ file(INSTALL "`${SOURCE_PATH}/LICENSE" DESTINATION "`${CURRENT_PACKAGES_DIR}/sha
 
 function Generate-ConanRecipe {
     param(
+        [string]$PackageName,
         [string]$Version,
         [hashtable]$Hashes,
         [string]$OutputPath,
@@ -786,6 +788,9 @@ function Generate-ConanRecipe {
     # Clean version (remove 'v' prefix)
     $cleanVersion = $Version -replace '^v', ''
     
+    # Generate class name from package name (PascalCase)
+    $className = ($PackageName -split '-' | ForEach-Object { $_.Substring(0,1).ToUpper() + $_.Substring(1) }) -join ''
+    
     # Generate conanfile.py
     $conanfilePath = Join-Path $OutputPath "conanfile.py"
     $conanfileContent = @"
@@ -795,8 +800,8 @@ from conan.tools.files import get, copy
 import os
 
 
-class NekoReleaseConan(ConanFile):
-    name = "nekorelease"
+class ${className}Conan(ConanFile):
+    name = "$PackageName"
     version = "$cleanVersion"
     description = "Fast release tool for Neko ecosystem"
     license = "MIT"
@@ -1185,10 +1190,10 @@ function Generate-PackageFiles {
                 Generate-WingetManifest -Version $Version -Hashes $Hashes -OutputPath $outputPath
             }
             "vcpkg" {
-                Generate-VcpkgPort -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
+                Generate-VcpkgPort -PackageName $script:PackageName -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
             }
             "Conan" {
-                Generate-ConanRecipe -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
+                Generate-ConanRecipe -PackageName $script:PackageName -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl
             }
             "Meson" {
                 Generate-MesonWrap -Version $Version -Hashes $Hashes -OutputPath $outputPath -RepoUrl $script:RepositoryUrl

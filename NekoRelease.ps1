@@ -929,6 +929,17 @@ function Generate-ConanRecipe {
     Write-DebugInfo "Conan: Received $($Hashes.Count) hash entries"
     Write-DebugInfo "Conan: Hash keys: [$($Hashes.Keys -join ', ')]"
     
+    # Create ConanCenter-style directory structure: recipes/<name>/all/
+    $recipeDir = Join-Path $OutputPath $PackageName
+    $allDir = Join-Path $recipeDir "all"
+    
+    if (-not (Test-Path $allDir)) {
+        New-Item -ItemType Directory -Path $allDir -Force | Out-Null
+    }
+    
+    Write-DebugInfo "Conan: Recipe directory: $recipeDir"
+    Write-DebugInfo "Conan: All directory: $allDir"
+    
     # Get SHA256 hash from the first file
     $sha256Hash = "REPLACE_WITH_SHA256_HASH"
     if ($Hashes.Count -gt 0) {
@@ -950,8 +961,19 @@ function Generate-ConanRecipe {
     # Generate class name from package name (PascalCase)
     $className = ($PackageName -split '-' | ForEach-Object { $_.Substring(0,1).ToUpper() + $_.Substring(1) }) -join ''
     
-    # Generate conanfile.py
-    $conanfilePath = Join-Path $OutputPath "conanfile.py"
+    # Determine download URL
+    $downloadSourceUrl = if ($DownloadUrl) {
+        $DownloadUrl
+    } elseif ($RepoUrl) {
+        "$RepoUrl/archive/refs/tags/$Version.tar.gz"
+    } else {
+        "https://github.com/yourusername/NekoRelease/archive/refs/tags/$Version.tar.gz"
+    }
+    
+    Write-DebugInfo "Conan: Download URL: $downloadSourceUrl"
+    
+    # Generate conanfile.py in all/ directory
+    $conanfilePath = Join-Path $allDir "conanfile.py"
     $conanfileContent = @"
 from conan import ConanFile
 from conan.tools.cmake import CMake, CMakeToolchain, cmake_layout
@@ -1028,8 +1050,8 @@ class ${className}Conan(ConanFile):
         Write-Info "  - conanfile.py (created)"
     }
     
-    # Generate conandata.yml
-    $conandataPath = Join-Path $OutputPath "conandata.yml"
+    # Generate conandata.yml in all/ directory
+    $conandataPath = Join-Path $allDir "conandata.yml"
     
     $shouldUpdateConandata = Test-ShouldUpdateFile -FilePath $conandataPath -Mode $script:Mode
     
@@ -1039,7 +1061,7 @@ class ${className}Conan(ConanFile):
         $newEntry = @"
 
   "$cleanVersion":
-    url: "$(if ($DownloadUrl) { $DownloadUrl } else { "https://github.com/yourusername/NekoRelease/archive/refs/tags/$Version.tar.gz" })"
+    url: "$downloadSourceUrl"
     sha256: "$sha256Hash"
 "@
         
@@ -1047,7 +1069,7 @@ class ${className}Conan(ConanFile):
         if ($existingContent -match "`"$cleanVersion`"") {
             # Update existing version entry
             Update-FileContent -FilePath $conandataPath -Replacements @{
-                "`"$cleanVersion`":\s*\n\s*url:\s*`"[^`"]*`"" = "`"$cleanVersion`":`n    url: `"$(if ($DownloadUrl) { $DownloadUrl } else { "https://github.com/yourusername/NekoRelease/archive/refs/tags/$Version.tar.gz" })`""
+                "`"$cleanVersion`":\s*\n\s*url:\s*`"[^`"]*`"" = "`"$cleanVersion`":`n    url: `"$downloadSourceUrl`""
                 "sha256:\s*`"[^`"]*`"" = "sha256: `"$sha256Hash`""
             }
         } else {
@@ -1060,14 +1082,48 @@ class ${className}Conan(ConanFile):
         $conandataContent = @"
 sources:
   "$cleanVersion":
-    url: "$(if ($DownloadUrl) { $DownloadUrl } else { "https://github.com/yourusername/NekoRelease/archive/refs/tags/$Version.tar.gz" })"
+    url: "$downloadSourceUrl"
     sha256: "$sha256Hash"
 "@
         Set-Content -Path $conandataPath -Value $conandataContent -Encoding UTF8
         Write-Info "  - conandata.yml (created)"
     }
     
-    Write-Success "Conan recipe generated: $OutputPath"
+    # Generate config.yml in recipe root directory
+    $configPath = Join-Path $recipeDir "config.yml"
+    
+    $shouldUpdateConfig = Test-ShouldUpdateFile -FilePath $configPath -Mode $script:Mode
+    
+    if (-not $shouldUpdateConfig) {
+        # Create new config.yml
+        $configContent = @"
+versions:
+  "$cleanVersion":
+    folder: all
+"@
+        Set-Content -Path $configPath -Value $configContent -Encoding UTF8
+        Write-Info "  - config.yml (created)"
+    } else {
+        # Update existing config.yml - add new version entry
+        $existingConfig = Get-Content -Path $configPath -Raw
+        
+        if (-not ($existingConfig -match "`"$cleanVersion`"")) {
+            # Append new version entry
+            $newVersionEntry = @"
+
+  "$cleanVersion":
+    folder: all
+"@
+            Add-Content -Path $configPath -Value $newVersionEntry
+            Write-Info "  - config.yml (updated)"
+        } else {
+            Write-Info "  - config.yml (version already exists)"
+        }
+    }
+    
+    Write-Success "Conan recipe generated: $recipeDir"
+    Write-Info "  Structure: $PackageName/all/{conanfile.py, conandata.yml}"
+    Write-Info "  Config: $PackageName/config.yml"
 }
 
 function Generate-MesonWrap {

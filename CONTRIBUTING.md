@@ -281,13 +281,13 @@ To add support for a new package manager:
 
 4. **Add to ValidateSet** in parameters:
    ```powershell
-   [ValidateSet("Chocolatey", "Scoop", "Winget", "vcpkg", "Conan", "Meson", "Buckaroo", "CPM", "MyPackageManager")]
+   [ValidateSet("vcpkg", "Conan", "MyPackageManager")]
    ```
 
 5. **Update documentation**:
    - Add to README.md package manager list
-   - Create example in EXAMPLES.md
-   - Add validation details in TESTING.md
+   - Add examples in GUIDE.md
+   - Add validation details in GUIDE.md
 
 6. **Test thoroughly**:
    ```powershell
@@ -311,7 +311,7 @@ To add support for a new package manager:
    ```powershell
    .\NekoRelease.ps1 `
        -Version "v0.1.0-test" `
-       -PackageManagers @("Chocolatey", "Scoop", "Winget", "vcpkg", "Conan", "Meson", "Buckaroo", "CPM")
+       -PackageManagers @("vcpkg", "Conan")
    ```
 
 3. **Validation**
@@ -337,10 +337,8 @@ To add support for a new package manager:
 
 **When adding features, update:**
 
-- `README.md` - Main features and parameters
-- `EXAMPLES.md` - Add usage examples
-- `QUICK_REFERENCE.md` - Add quick commands
-- `TESTING.md` - If adding validation
+- `README.md` - Quick start and overview
+- `GUIDE.md` - Detailed examples and workflows
 - `CHANGELOG.md` - Document the change
 - Function help comments
 
@@ -356,20 +354,14 @@ To add support for a new package manager:
 
 ```
 NekoRelease/
-├── NekoRelease.ps1              # Main script
-├── Test-NekoPackages.ps1        # Validation script
-├── Release-WithValidation.ps1   # Workflow script
-├── .nekorelease.example.json    # Config template
-├── README.md                    # Main docs
-├── EXAMPLES.md                  # Usage examples
-├── CPP_EXAMPLES.md              # C++ examples
-├── UPDATE_MODE_EXAMPLES.md      # Mode examples
-├── ADVANCED_FEATURES.md         # Advanced guide
-├── TESTING.md                   # Testing guide
-├── QUICK_REFERENCE.md           # Quick reference
-├── PROJECT_OVERVIEW.md          # Project overview
+├── NekoRelease.ps1              # Main release automation script
+├── Test-NekoPackages.ps1        # Validation and testing script
+├── Release-WithValidation.ps1   # Complete workflow script
+├── .nekorelease.example.json    # Configuration template
+├── README.md                    # Quick start and overview
+├── GUIDE.md                     # Complete usage guide with examples
+├── CONTRIBUTING.md              # Contribution guidelines (this file)
 ├── CHANGELOG.md                 # Version history
-├── CONTRIBUTING.md              # This file
 └── LICENSE                      # MIT License
 ```
 

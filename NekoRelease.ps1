@@ -878,8 +878,9 @@ function Generate-VcpkgPort {
     
     if ($shouldUpdatePortfile) {
         # Update existing portfile.cmake
+        # Use negative lookbehind to avoid matching HEAD_REF
         Update-FileContent -FilePath $portfilePath -Replacements @{
-            "REF\s+\S+" = "REF $Version"
+            "(?<!HEAD_)REF\s+\S+" = "REF $Version"
             "SHA512\s+\S+" = "SHA512 $sha512Hash"
         }
         Write-Info "  - portfile.cmake (updated)"

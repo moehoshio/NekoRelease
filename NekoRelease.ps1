@@ -541,7 +541,7 @@ function Calculate-FileHash {
     Write-Success "Hash: $($hash.Hash)"
     Write-DebugInfo "Full hash object: Algorithm=$($hash.Algorithm), Path=$($hash.Path)"
     
-    return $hash.Hash
+    return $hash.Hash.ToLower()
 }
 
 function Download-AndHashReleaseAssets {
@@ -819,7 +819,7 @@ function Generate-VcpkgPort {
         New-Item -ItemType Directory -Path $portDir -Force | Out-Null
     }
     
-    # Get SHA512 hash from the first file
+    # Get SHA512 hash from the first file (lowercase for vcpkg consistency)
     $sha512Hash = "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
     if ($Hashes.Count -gt 0) {
         $firstFile = $Hashes.Keys | Select-Object -First 1
